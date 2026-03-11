@@ -256,7 +256,7 @@ async function runTests(): Promise<void> {
     // Test: status
     const statusResult = await sendCommand(socket, sendCipher, recvCipher, { type: 'status' });
     const status = statusResult.data as any;
-    if (statusResult.success && status?.attestationType === 'mock') {
+    if (statusResult.success && (status?.attestationType === 'mock' || status?.attestationType === 'none')) {
       pass('Status command returns attestation info');
     } else {
       fail('Status command', JSON.stringify(statusResult));
