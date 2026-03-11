@@ -201,6 +201,75 @@ Use **KBS (inside TEE) + client recovery keys** together:
 - Disaster recovery: users restore from their own recovery keys
 - Belt and suspenders.
 
+
+## Cross-Vendor Replication & KBS Persistence
+
+### KBS Key Persistence Across Reboots
+
+KBS stores keys in an encrypted backend (etcd/Postgres), NOT derived from hardware.
+Keys are random bytes. Hardware attestation controls ACCESS, not generation.
+
+```
+KBS cluster (3 nodes, all in TEEs, cross-AZ)
+  +-- etcd (encrypted at rest, replicated)
+  +-- keys = random bytes, vendor-agnostic
+  +-- survives any individual node reboot/failure
+```
+
+### Cross-Vendor Attestation (AMD + Intel)
+
+KBS accepts attestation from multiple hardware vendors:
+
+```
+KBS validates:
+  AMD workload -> verify SNP quote against AMD root CA -> release key
+  Intel workload -> verify TDX quote against Intel root CA -> release SAME key
+```
+
+The key is not tied to any specific hardware. Any pod running the correct code
+(matching measurements) on any supported TEE vendor gets the same key.
+
+### Chip Death Recovery
+
+Hardware-derived keys (MSG_KEY_REQ) die with the chip. Therefore:
+
+**Rule: Never derive user data keys from hardware.**
+
+```
+BAD:  user_key = MSG_KEY_REQ(chip, measurement)  // chip dies = key dies
+GOOD: user_key = KBS.get(measurement, user_id)    // chip dies = get from KBS
+```
+
+KBS is the key store. Hardware attestation is the access control.
+
+### Replication Topology
+
+```
+          KBS-1 (AMD, us-east)
+            |
+     etcd replication (E2E encrypted)
+            |
+          KBS-2 (Intel, us-west)
+            |
+     etcd replication (E2E encrypted)
+            |
+          KBS-3 (AMD, eu-west)
+
+Any KBS node can serve any workload.
+Any workload can run on any vendor.
+Any single node can die without data loss.
+```
+
+### Mutual TEE Attestation (TEE-to-TEE)
+
+KBS nodes verify each other before replicating:
+1. KBS-1 (AMD) gets SNP quote, sends to KBS-2 (Intel)
+2. KBS-2 verifies SNP quote against AMD root CA
+3. KBS-2 (Intel) gets TDX quote, sends to KBS-1
+4. KBS-1 verifies TDX quote against Intel root CA
+5. Mutually attested -> Diffie-Hellman -> shared channel -> replicate keys
+
+
 ## Verifier Deployment
 
 The verifier runs **on the client device** (phone/browser). Not on a server.
