@@ -1,0 +1,60 @@
+name: Build, Sign & Publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'images/**'
+      - 'nix/**'
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write  # Required for keyless signing
+
+jobs:
+  build-and-sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+      
+      - name: Build container image
+        run: |
+          nix build .#workload --out-link result
+          docker load < result
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' secure-perimeter-workload:latest)
+          echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
+      
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Push image
+        run: |
+          docker tag secure-perimeter-workload:latest ghcr.io/${{ github.repository }}-workload:${{ github.sha }}
+          docker tag secure-perimeter-workload:latest ghcr.io/${{ github.repository }}-workload:latest
+          docker push ghcr.io/${{ github.repository }}-workload:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository }}-workload:latest
+      
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+      
+      - name: Sign image (keyless)
+        run: |
+          cosign sign --yes ghcr.io/${{ github.repository }}-workload:${{ github.sha }}
+          cosign sign --yes ghcr.io/${{ github.repository }}-workload:latest
+      
+      - name: Generate SLSA provenance
+        uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2
+        with:
+          image: ghcr.io/${{ github.repository }}-workload
+          digest: ${{ env.IMAGE_DIGEST }}

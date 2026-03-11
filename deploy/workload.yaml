@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workload
+  namespace: secure-perimeter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: workload
+  template:
+    metadata:
+      labels:
+        app: workload
+    spec:
+      runtimeClassName: kata-snp
+      containers:
+        - name: workload
+          image: ghcr.io/ex3ndr-bot/secure-perimeter-workload:latest
+          ports:
+            - containerPort: 8443
+              name: noise
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          env:
+            - name: ATTESTATION_ENABLED
+              value: "true"
+            - name: NOISE_PORT
+              value: "8443"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "2"
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: workload-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: workload
+  namespace: secure-perimeter
+spec:
+  selector:
+    app: workload
+  ports:
+    - port: 8443
+      targetPort: 8443
+      name: noise

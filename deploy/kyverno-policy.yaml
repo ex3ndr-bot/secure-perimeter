@@ -1,0 +1,24 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-container-signatures
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: verify-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+          - "ghcr.io/ex3ndr-bot/secure-perimeter-*"
+          attestors:
+          - entries:
+            - keyless:
+                subject: "https://github.com/ex3ndr-bot/*"
+                issuer: "https://token.actions.githubusercontent.com"
+                rekor:
+                  url: https://rekor.sigstore.dev

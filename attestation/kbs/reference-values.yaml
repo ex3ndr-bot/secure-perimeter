@@ -1,0 +1,15 @@
+# Reference measurements for attestation validation
+# Update these after each build with actual TEE measurements
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kbs-reference-values
+  namespace: trustee
+data:
+  reference-values.json: |
+    {
+      "measurements": {
+        "description": "Expected TEE measurements for secure-perimeter workload",
+        "values": []
+      }
+    }
