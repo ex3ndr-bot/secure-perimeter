@@ -155,7 +155,12 @@ export class KeyReplicator extends EventEmitter {
   }
 
   private deriveSessionKey(tx: Uint8Array, rx: Uint8Array): Buffer {
-    const combined = Buffer.concat([Buffer.from(tx), Buffer.from(rx)]);
+    // Sort keys to ensure same ordering on both initiator and responder
+    const txBuf = Buffer.from(tx);
+    const rxBuf = Buffer.from(rx);
+    const combined = txBuf.compare(rxBuf) < 0
+      ? Buffer.concat([txBuf, rxBuf])
+      : Buffer.concat([rxBuf, txBuf]);
     return Buffer.from(hkdfSync('sha256', combined, Buffer.alloc(0), Buffer.from('key-replication-wrap'), 32));
   }
 
@@ -218,9 +223,7 @@ export class KeyReplicator extends EventEmitter {
     console.log(`[replication] Incoming connection from ${addr}`);
 
     try {
-      const noise = new Noise('XX', false, {
-        s: { publicKey: this.keypair!.publicKey, secretKey: this.keypair!.secretKey },
-      });
+      const noise = new Noise('XX', false, this.keypair);
       noise.initialise(Buffer.alloc(0));
 
       // msg1: -> e
@@ -300,9 +303,7 @@ export class KeyReplicator extends EventEmitter {
         socket.on('error', onError);
       });
 
-      const noise = new Noise('XX', true, {
-        s: { publicKey: this.keypair!.publicKey, secretKey: this.keypair!.secretKey },
-      });
+      const noise = new Noise('XX', true, this.keypair);
       noise.initialise(Buffer.alloc(0));
 
       // msg1: -> e
