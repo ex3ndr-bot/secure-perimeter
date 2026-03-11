@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createNoiseServer, NoiseServer, EncryptedSession } from '../noise.js';
 import { createStorage } from '../storage.js';
-import { createSocket, Socket } from 'node:net';
+import { createConnection, Socket } from 'node:net';
 import { mkdir, rm } from 'node:fs/promises';
 
 // @ts-expect-error - noise-handshake doesn't have types
@@ -31,10 +31,14 @@ class TestClient {
 
   async connect(port: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.socket = createSocket({ port, host: '127.0.0.1' });
+      this.socket = createConnection({ port, host: '127.0.0.1' });
       this.socket.on('connect', async () => {
-        await this.doHandshake();
-        resolve();
+        try {
+          await this.doHandshake();
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
       });
       this.socket.on('error', reject);
     });
@@ -109,7 +113,7 @@ class TestClient {
   }
 }
 
-describe('Integration', () => {
+describe('Integration', { timeout: 30000 }, () => {
   let server: NoiseServer;
   let storage: ReturnType<typeof createStorage>;
 

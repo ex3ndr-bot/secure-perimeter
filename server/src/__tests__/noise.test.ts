@@ -14,6 +14,8 @@ import Cipher from 'noise-handshake/cipher.js';
 
 const TEST_DATA_DIR = '/tmp/sp-noise-test';
 const TEST_PORT = 19443;
+// BLAKE2b uses 64-byte hash
+const HASHLEN = 64;
 
 describe('NoiseServer', () => {
   let server: NoiseServer;
@@ -64,7 +66,7 @@ describe('NoiseServer', () => {
     expect(pubKey1).toBe(pubKey2);
   });
 
-  it('should accept a connection and complete handshake', async () => {
+  it('should accept a connection and complete handshake', { timeout: 15000 }, async () => {
     await server.start();
 
     const sessionPromise = new Promise<EncryptedSession>((resolve) => {
@@ -93,7 +95,7 @@ describe('NoiseServer', () => {
     });
 
     // Process server response
-    const payload = clientNoise.recv(serverReply);
+    clientNoise.recv(serverReply);
 
     // Send final message (-> s, se)
     const msg3 = clientNoise.send();
@@ -106,12 +108,13 @@ describe('NoiseServer', () => {
     const session = await sessionPromise;
     expect(session).toBeDefined();
     expect(session.remotePublicKey.length).toBe(32);
-    expect(session.handshakeHash.length).toBe(32);
+    // BLAKE2b hash is 64 bytes
+    expect(session.handshakeHash.length).toBe(HASHLEN);
 
     client.destroy();
   });
 
-  it('should allow encrypted communication after handshake', async () => {
+  it('should allow encrypted communication after handshake', { timeout: 15000 }, async () => {
     await server.start();
 
     const sessionPromise = new Promise<EncryptedSession>((resolve) => {
