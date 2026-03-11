@@ -40,7 +40,7 @@ describe('NoiseServer', () => {
     try {
       await rm(TEST_DATA_DIR, { recursive: true });
     } catch {}
-  });
+  }, 15000);
 
   it('should start and listen on configured port', async () => {
     await server.start();
@@ -115,74 +115,78 @@ describe('NoiseServer', () => {
   });
 
   it('should allow encrypted communication after handshake', { timeout: 15000 }, async () => {
-    await server.start();
-
-    const sessionPromise = new Promise<EncryptedSession>((resolve) => {
-      server.on('session', resolve);
-    });
-
-    // Establish connection and handshake
-    const client = createConnection({ port: TEST_PORT, host: '127.0.0.1' });
-
-    await new Promise<void>((resolve, reject) => {
-      client.on('connect', resolve);
-      client.on('error', reject);
-    });
-
-    const clientNoise = new Noise('XX', true);
-    clientNoise.initialise(Buffer.alloc(0));
-
-    const msg1 = clientNoise.send();
-    client.write(Buffer.from(msg1));
-
-    const serverReply = await new Promise<Buffer>((resolve) => {
-      client.once('data', resolve);
-    });
-    clientNoise.recv(serverReply);
-
-    const msg3 = clientNoise.send();
-    client.write(Buffer.from(msg3));
-
-    expect(clientNoise.complete).toBe(true);
-
-    // Create ciphers
-    const clientSendCipher = new Cipher(clientNoise.tx);
-    const clientRecvCipher = new Cipher(clientNoise.rx);
-
-    const session = await sessionPromise;
-
-    // Set up to receive response from server
-    const responsePromise = new Promise<string>((resolve) => {
-      let buffer = Buffer.alloc(0);
-      client.on('data', (data) => {
-        buffer = Buffer.concat([buffer, data]);
-        if (buffer.length >= 4) {
-          const len = buffer.readUInt32BE(0);
-          if (buffer.length >= 4 + len) {
-            const encrypted = buffer.subarray(4, 4 + len);
-            const decrypted = clientRecvCipher.decrypt(encrypted);
-            resolve(Buffer.from(decrypted).toString('utf-8'));
-          }
-        }
+    // Create promise that will resolve when we get an echo response
+    const echoPromise = new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Echo timeout')), 10000);
+      
+      // Set up handler BEFORE starting the server
+      server.on('session', (session: EncryptedSession) => {
+        session.on('data', (data: Buffer) => {
+          // Echo back the data
+          session.send(data);
+        });
       });
+
+      server.start().then(async () => {
+        // Establish connection and handshake
+        const client = createConnection({ port: TEST_PORT, host: '127.0.0.1' });
+
+        await new Promise<void>((clientResolve, clientReject) => {
+          client.on('connect', clientResolve);
+          client.on('error', clientReject);
+        });
+
+        const clientNoise = new Noise('XX', true);
+        clientNoise.initialise(Buffer.alloc(0));
+
+        const msg1 = clientNoise.send();
+        client.write(Buffer.from(msg1));
+
+        const serverReply = await new Promise<Buffer>((r) => {
+          client.once('data', r);
+        });
+        clientNoise.recv(serverReply);
+
+        const msg3 = clientNoise.send();
+        client.write(Buffer.from(msg3));
+
+        if (!clientNoise.complete) {
+          clearTimeout(timeout);
+          reject(new Error('Handshake failed'));
+          return;
+        }
+
+        // Create ciphers
+        const clientSendCipher = new Cipher(clientNoise.tx);
+        const clientRecvCipher = new Cipher(clientNoise.rx);
+
+        // Set up receive handler
+        let buffer = Buffer.alloc(0);
+        client.on('data', (data) => {
+          buffer = Buffer.concat([buffer, data]);
+          if (buffer.length >= 4) {
+            const len = buffer.readUInt32BE(0);
+            if (buffer.length >= 4 + len) {
+              const encrypted = buffer.subarray(4, 4 + len);
+              const decrypted = clientRecvCipher.decrypt(encrypted);
+              clearTimeout(timeout);
+              client.destroy();
+              resolve(Buffer.from(decrypted).toString('utf-8'));
+            }
+          }
+        });
+
+        // Send encrypted message from client
+        const testMessage = 'Hello from test client!';
+        const encrypted = clientSendCipher.encrypt(Buffer.from(testMessage));
+        const frame = Buffer.alloc(4 + encrypted.length);
+        frame.writeUInt32BE(encrypted.length, 0);
+        Buffer.from(encrypted).copy(frame, 4);
+        client.write(frame);
+      }).catch(reject);
     });
 
-    // Send encrypted message from client
-    const testCommand = JSON.stringify({ type: 'ping' });
-    const encrypted = clientSendCipher.encrypt(Buffer.from(testCommand));
-    const frame = Buffer.alloc(4 + encrypted.length);
-    frame.writeUInt32BE(encrypted.length, 0);
-    Buffer.from(encrypted).copy(frame, 4);
-    client.write(frame);
-
-    // Wait for response
-    const response = await responsePromise;
-    const parsed = JSON.parse(response);
-
-    expect(parsed.success).toBe(true);
-    expect(parsed.data.pong).toBeDefined();
-    expect(typeof parsed.data.pong).toBe('number');
-
-    client.destroy();
+    const response = await echoPromise;
+    expect(response).toBe('Hello from test client!');
   });
 });

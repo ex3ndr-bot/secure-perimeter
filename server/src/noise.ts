@@ -226,6 +226,10 @@ export class NoiseServer extends EventEmitter {
           const sendCipher = new Cipher(state.tx) as NoiseCipher;
           const recvCipher = new Cipher(state.rx) as NoiseCipher;
 
+          // Remove our handshake data handler before creating EncryptedSession
+          // (EncryptedSession adds its own handler in constructor)
+          socket.removeAllListeners('data');
+
           // Create encrypted session
           const encSession = new EncryptedSession(
             socket,
@@ -234,9 +238,6 @@ export class NoiseServer extends EventEmitter {
             recvCipher,
             remoteAttestation
           );
-
-          // Remove our data handler, let EncryptedSession take over
-          socket.removeAllListeners('data');
 
           console.log(`[noise] Handshake complete with ${addr}`);
           this.emit('session', encSession);
