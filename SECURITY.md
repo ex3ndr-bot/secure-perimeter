@@ -126,6 +126,81 @@ You must still trust:
 3. **Your own code** doesn't have vulnerabilities (but it's auditable)
 4. **The client device** isn't compromised
 
+
+## Server Crash Recovery
+
+### What happens when the TEE server crashes?
+
+**Scenario 1: Pod restarts on the SAME physical CPU**
+- AMD SEV-SNP `MSG_KEY_REQ` derives the same key (same chip + same code measurement)
+- Encrypted data on the LUKS volume is still readable
+- Users reconnect, re-attest, continue normally
+- **No data loss.**
+
+**Scenario 2: Pod restarts on a DIFFERENT physical CPU**
+- Different chip = different VCEK = different derived key
+- Data encrypted with the old chip's key is **unreadable**
+- This is the "sealing problem"
+
+**Solutions to the sealing problem:**
+
+#### A. KBS Key Escrow (Recommended for k3s)
+```
+Pod boots on new CPU -> attests to KBS -> KBS recognizes valid code
+-> KBS releases the SAME master key it gave the old pod
+-> Data is readable again
+```
+The KBS stores keys indexed by code measurement, not by chip.
+Any pod running the correct code gets the same key.
+The KBS itself runs inside a TEE (turtles all the way down).
+
+#### B. Client-Held Recovery Keys
+```
+User's device holds an encrypted backup of their data key.
+New pod boots -> user re-attests -> user sends recovery key -> data restored.
+```
+No dependency on KBS. User has full sovereignty.
+Downside: user loses device + recovery key = data gone forever.
+
+#### C. Replicated TEEs (High Availability)
+```
+3 TEE pods on 3 different CPUs, all running same code.
+Each derives different chip-bound keys.
+State replicated via E2E encrypted raft consensus BETWEEN TEEs.
+If one dies, the other two continue.
+```
+Most complex but most resilient. The TEEs trust each other
+because they mutually attest (each verifies the other's quote).
+
+### What about in-flight requests during crash?
+
+- Noise protocol sessions are ephemeral — they die with the pod
+- Clients detect broken connection, re-handshake with new pod
+- Client re-attests the new pod (could be different hardware)
+- Forward secrecy means the crashed pod's session keys are gone forever
+  (even if someone captures the crash dump, past sessions are unreadable)
+
+### What about data consistency?
+
+- Write-ahead logging: flush to encrypted volume before acknowledging
+- If crash mid-write: recovery on restart via WAL replay
+- If using KBS: pod comes back, gets same key, replays WAL
+- If using client keys: client re-sends after re-attestation
+
+### Worst case: total infrastructure loss
+
+If ALL pods die and KBS is gone:
+- **With client-held keys:** Users can recover their data from encrypted backups
+- **With KBS only:** Data is lost unless KBS has its own backup (which should also be in a TEE)
+- **With multi-party custody:** Reconstruct from key shares held by independent parties
+
+### Recommendation
+
+Use **KBS (inside TEE) + client recovery keys** together:
+- Normal operation: KBS handles key distribution across pod migrations
+- Disaster recovery: users restore from their own recovery keys
+- Belt and suspenders.
+
 ## Verifier Deployment
 
 The verifier runs **on the client device** (phone/browser). Not on a server.
