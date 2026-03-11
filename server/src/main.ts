@@ -1,17 +1,20 @@
 /**
  * Secure Perimeter Server - Entry Point
- * 
+ *
  * A TypeScript server that:
  * 1. Listens on a Noise Protocol socket (port 8443)
  * 2. During handshake, reads TEE attestation quote from hardware and embeds it
  * 3. Provides encrypted, attested communication channel
  * 4. Manages encrypted state (read/write to /data volume)
+ * 5. Optionally replicates keys with peer TEE nodes
  */
 
 import { createNoiseServer, EncryptedSession } from './noise.js';
 import { createStorage } from './storage.js';
+import { createReplicatedKeyStore, ReplicatedKeyStore } from './key-store.js';
+import { createKeyReplicator, KeyReplicator } from './replication.js';
 import { isAttested } from './attestation.js';
-import type { ServerConfig } from './types.js';
+import type { ServerConfig, ReplicationConfig, PeerConfig } from './types.js';
 
 /** Load configuration from environment variables */
 function loadConfig(): ServerConfig {
@@ -19,6 +22,65 @@ function loadConfig(): ServerConfig {
     noisePort: parseInt(process.env['NOISE_PORT'] ?? '8443', 10),
     attestationEnabled: process.env['ATTESTATION_ENABLED'] !== 'false',
     dataDir: process.env['DATA_DIR'] ?? '/data',
+  };
+}
+
+/**
+ * Load replication configuration from environment variables
+ * Returns null if replication is not configured
+ */
+function loadReplicationConfig(baseConfig: ServerConfig): ReplicationConfig | null {
+  const nodeId = process.env['NODE_ID'];
+  const replicationPort = process.env['REPLICATION_PORT'];
+  const replicationPeers = process.env['REPLICATION_PEERS'];
+
+  // Replication requires at minimum NODE_ID and REPLICATION_PORT
+  if (!nodeId || !replicationPort) {
+    return null;
+  }
+
+  // Parse peers: "nodeId@host:port,nodeId@host:port"
+  const peers: PeerConfig[] = [];
+  if (replicationPeers) {
+    for (const peerStr of replicationPeers.split(',')) {
+      const trimmed = peerStr.trim();
+      if (!trimmed) continue;
+
+      const match = trimmed.match(/^([^@]+)@([^:]+):(\d+)$/);
+      if (match) {
+        peers.push({
+          nodeId: match[1],
+          host: match[2],
+          port: parseInt(match[3], 10),
+        });
+      } else {
+        console.warn(`[main] Invalid peer format: ${trimmed} (expected nodeId@host:port)`);
+      }
+    }
+  }
+
+  // Parse expected measurements (comma-separated hex strings)
+  const expectedMeasurements: Uint8Array[] = [];
+  const measurementsEnv = process.env['EXPECTED_MEASUREMENTS'];
+  if (measurementsEnv) {
+    for (const hex of measurementsEnv.split(',')) {
+      const trimmed = hex.trim();
+      if (trimmed) {
+        expectedMeasurements.push(Buffer.from(trimmed, 'hex'));
+      }
+    }
+  }
+
+  const syncIntervalMs = parseInt(process.env['REPLICATION_INTERVAL'] ?? '30000', 10);
+
+  return {
+    nodeId,
+    replicationPort: parseInt(replicationPort, 10),
+    peers,
+    expectedMeasurements,
+    syncIntervalMs,
+    dataDir: baseConfig.dataDir,
+    attestationEnabled: baseConfig.attestationEnabled,
   };
 }
 
@@ -31,7 +93,7 @@ function toHex(arr: Uint8Array): string {
 function handleSession(session: EncryptedSession, storage: ReturnType<typeof createStorage>): void {
   const pubKeyHex = toHex(session.remotePublicKey).slice(0, 16) + '...';
   console.log(`[main] New session with peer: ${pubKeyHex}`);
-  
+
   if (session.remoteAttestation) {
     console.log(`[main] Peer attestation: ${session.remoteAttestation.teeType}`);
   }
@@ -142,12 +204,50 @@ async function main(): Promise<void> {
 
   // Create and start Noise server
   const server = createNoiseServer(config);
-  
+
   server.on('session', (session: EncryptedSession) => {
     handleSession(session, storage);
   });
 
   await server.start();
+
+  // Initialize replication if configured
+  let keyStore: ReplicatedKeyStore | null = null;
+  let replicator: KeyReplicator | null = null;
+
+  const replicationConfig = loadReplicationConfig(config);
+  if (replicationConfig) {
+    console.log('[main] Replication configuration:');
+    console.log(`  - Node ID: ${replicationConfig.nodeId}`);
+    console.log(`  - Replication port: ${replicationConfig.replicationPort}`);
+    console.log(`  - Peers: ${replicationConfig.peers.length}`);
+    for (const peer of replicationConfig.peers) {
+      console.log(`    - ${peer.nodeId} @ ${peer.host}:${peer.port}`);
+    }
+    console.log(`  - Sync interval: ${replicationConfig.syncIntervalMs}ms`);
+
+    // Initialize key store
+    keyStore = createReplicatedKeyStore({ dataDir: config.dataDir });
+    await keyStore.init();
+
+    // Initialize replicator
+    replicator = createKeyReplicator(replicationConfig, keyStore);
+
+    replicator.on('sync', (result) => {
+      if (result.success) {
+        console.log(
+          `[main] Sync with ${result.peerId}: sent=${result.keysSent}, received=${result.keysReceived}, duration=${result.durationMs}ms`
+        );
+      } else {
+        console.warn(`[main] Sync with ${result.peerId} failed: ${result.error}`);
+      }
+    });
+
+    await replicator.start();
+    console.log('[main] Key replication enabled');
+  } else {
+    console.log('[main] Key replication disabled (set NODE_ID and REPLICATION_PORT to enable)');
+  }
 
   console.log('='.repeat(60));
   console.log('Server ready. Press Ctrl+C to stop.');
@@ -156,6 +256,11 @@ async function main(): Promise<void> {
   // Handle graceful shutdown
   const shutdown = async (): Promise<void> => {
     console.log('\n[main] Shutting down...');
+
+    if (replicator) {
+      await replicator.stop();
+    }
+
     await server.stop();
     process.exit(0);
   };
