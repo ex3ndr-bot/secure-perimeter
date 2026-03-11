@@ -196,6 +196,57 @@ Encrypted persistent volumes using LUKS:
 - Custom attestation verification
 - Android Keystore for session keys
 
+
+
+## Per-Pod Encryption (Key Isolation)
+
+**Critical invariant: no shared encryption keys between users.**
+
+Each pod gets its own encryption key hierarchy. Users' data is cryptographically isolated
+even if pods share the same physical volume or the same TEE.
+
+### Key Derivation Hierarchy
+
+```
+KBS Master Secret (released after attestation)
+    |
+    +-> HKDF(master, "pod:" + pod_id) -> Pod Root Key
+    |       |
+    |       +-> HKDF(pod_root, "user:" + user_id) -> User Data Key
+    |       |       +-> Encrypts user's state (AES-256-GCM)
+    |       |
+    |       +-> HKDF(pod_root, "session:" + session_id) -> Session Key
+    |               +-> Ephemeral, forward-secret per-connection
+    |
+    +-> Each pod attestation gets a UNIQUE master secret from KBS
+        (KBS tracks which pod_id received which key)
+```
+
+### How It Works
+
+1. **Pod boots** -> TEE generates attestation quote with unique pod identity
+2. **Pod attests to KBS** -> KBS validates, generates unique master secret for this pod
+3. **User connects** -> after Noise handshake, user provides user_id
+4. **Key derivation** -> HKDF derives user-specific data key from pod master + user_id
+5. **Storage** -> each user's data encrypted with their own derived key
+6. **Key never shared** -> different pods get different masters; different users get different derived keys
+
+### Implementation
+
+```typescript
+// Key derivation (HKDF-SHA256)
+const podRootKey = hkdf(masterSecret, "pod:" + podId);
+const userDataKey = hkdf(podRootKey, "user:" + userId);
+const encrypted = aes256gcm.encrypt(userDataKey, plaintext);
+```
+
+### Properties
+- **Pod isolation**: Each pod gets a unique master from KBS
+- **User isolation**: HKDF ensures user keys are cryptographically independent
+- **Forward secrecy**: Session keys are ephemeral
+- **Key rotation**: KBS can issue new masters; pods re-derive user keys
+- **No shared state**: Even if two pods serve the same user, they derive independently
+
 ## Quick Start
 
 ```bash
