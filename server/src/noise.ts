@@ -14,7 +14,7 @@ import type { NoiseKeypair, NoiseSession, ServerConfig, AttestationQuote } from 
 // @ts-expect-error - noise-handshake doesn't have types
 import Noise from 'noise-handshake';
 // @ts-expect-error - noise-handshake/cipher doesn't have types
-import Cipher from 'noise-handshake/cipher';
+import Cipher from 'noise-handshake/cipher.js';
 
 const KEYPAIR_FILE = 'noise-keypair.json';
 
